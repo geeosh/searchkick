@@ -643,11 +643,12 @@ module Searchkick
           }
         elsif histogram = agg_options[:date_histogram]
           interval = histogram[:interval]
+          time_zone = histogram[:time_zone].present? ? { time_zone: histogram[:time_zone] } : {}
           payload[:aggs][field] = {
             date_histogram: {
               field: histogram[:field],
               interval: interval
-            }
+            }.merge(time_zone)
           }
         else
           payload[:aggs][field] = {
