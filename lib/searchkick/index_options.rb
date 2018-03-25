@@ -4,28 +4,23 @@ module Searchkick
       options = @options
       language = options[:language]
       language = language.call if language.respond_to?(:call)
+      index_type = options[:_type]
+      index_type = index_type.call if index_type.respond_to?(:call)
 
       if options[:mappings] && !options[:merge_mappings]
         settings = options[:settings] || {}
         mappings = options[:mappings]
       else
-        below22 = Searchkick.server_below?("2.2.0")
-        below50 = Searchkick.server_below?("5.0.0-alpha1")
-        default_type = below50 ? "string" : "text"
-        default_analyzer = below50 ? :default_index : :default
-        keyword_mapping =
-          if below50
-            {
-              type: default_type,
-              index: "not_analyzed"
-            }
-          else
-            {
-              type: "keyword"
-            }
-          end
+        below60 = Searchkick.server_below?("6.0.0-alpha1")
+        default_type = "text"
+        default_analyzer = :searchkick_index
+        keyword_mapping = {type: "keyword"}
 
-        keyword_mapping[:ignore_above] = (options[:ignore_above] || 256) unless below22
+        all = options.key?(:_all) ? options[:_all] : false
+        index_true_value = true
+        index_false_value = false
+
+        keyword_mapping[:ignore_above] = options[:ignore_above] || 30000
 
         settings = {
           analysis: {
@@ -33,7 +28,7 @@ module Searchkick
               searchkick_keyword: {
                 type: "custom",
                 tokenizer: "keyword",
-                filter: ["lowercase"] + (options[:stem_conversions] == false ? [] : ["searchkick_stemmer"])
+                filter: ["lowercase"] + (options[:stem_conversions] ? ["searchkick_stemmer"] : [])
               },
               default_analyzer => {
                 type: "custom",
@@ -58,11 +53,6 @@ module Searchkick
                 filter: ["standard", "lowercase", "asciifolding", "searchkick_stemmer"]
               },
               # https://github.com/leschenko/elasticsearch_autocomplete/blob/master/lib/elasticsearch_autocomplete/analyzers.rb
-              searchkick_autocomplete_index: {
-                type: "custom",
-                tokenizer: "searchkick_autocomplete_ngram",
-                filter: ["lowercase", "asciifolding"]
-              },
               searchkick_autocomplete_search: {
                 type: "custom",
                 tokenizer: "keyword",
@@ -137,7 +127,6 @@ module Searchkick
               },
               searchkick_stemmer: {
                 # use stemmer if language is lowercase, snowball otherwise
-                # TODO deprecate language option in favor of stemmer
                 type: language == language.to_s.downcase ? "stemmer" : "snowball",
                 language: language || "English"
               }
@@ -149,16 +138,74 @@ module Searchkick
                 type: "mapping",
                 mappings: ["&=> and "]
               }
-            },
-            tokenizer: {
-              searchkick_autocomplete_ngram: {
-                type: "edgeNGram",
-                min_gram: 1,
-                max_gram: 50
-              }
             }
           }
         }
+
+        case language
+        when "chinese"
+          settings[:analysis][:analyzer].merge!(
+            default_analyzer => {
+              type: "ik_smart"
+            },
+            searchkick_search: {
+              type: "ik_smart"
+            },
+            searchkick_search2: {
+              type: "ik_max_word"
+            }
+          )
+
+          settings[:analysis][:filter].delete(:searchkick_stemmer)
+        when "japanese"
+          settings[:analysis][:analyzer].merge!(
+            default_analyzer => {
+              type: "kuromoji"
+            },
+            searchkick_search: {
+              type: "kuromoji"
+            },
+            searchkick_search2: {
+              type: "kuromoji"
+            }
+          )
+        when "korean"
+          settings[:analysis][:analyzer].merge!(
+            default_analyzer => {
+              type: "openkoreantext-analyzer"
+            },
+            searchkick_search: {
+              type: "openkoreantext-analyzer"
+            },
+            searchkick_search2: {
+              type: "openkoreantext-analyzer"
+            }
+          )
+        when "vietnamese"
+          settings[:analysis][:analyzer].merge!(
+            default_analyzer => {
+              type: "vi_analyzer"
+            },
+            searchkick_search: {
+              type: "vi_analyzer"
+            },
+            searchkick_search2: {
+              type: "vi_analyzer"
+            }
+          )
+        when "polish", "ukrainian", "smartcn"
+          settings[:analysis][:analyzer].merge!(
+            default_analyzer => {
+              type: language
+            },
+            searchkick_search: {
+              type: language
+            },
+            searchkick_search2: {
+              type: language
+            }
+          )
+        end
 
         if Searchkick.env == "test"
           settings[:number_of_shards] = 1
@@ -179,7 +226,8 @@ module Searchkick
         if synonyms.any?
           settings[:analysis][:filter][:searchkick_synonym] = {
             type: "synonym",
-            synonyms: synonyms.select { |s| s.size > 1 }.map { |s| s.is_a?(Array) ? s.join(",") : s }
+            # only remove a single space from synonyms so three-word synonyms will fail noisily instead of silently
+            synonyms: synonyms.select { |s| s.size > 1 }.map { |s| s.is_a?(Array) ? s.map { |s2| s2.sub(/\s+/, "") }.join(",") : s }.map(&:downcase)
           }
           # choosing a place for the synonym filter when stemming is not easy
           # https://groups.google.com/forum/#!topic/elasticsearch/p7qcQlgHdB8
@@ -190,7 +238,7 @@ module Searchkick
           # - Only apply the synonym expansion at index time
           # - Don't have the synonym filter applied search
           # - Use directional synonyms where appropriate. You want to make sure that you're not injecting terms that are too general.
-          settings[:analysis][:analyzer][default_analyzer][:filter].insert(4, "searchkick_synonym")
+          settings[:analysis][:analyzer][default_analyzer][:filter].insert(4, "searchkick_synonym") if below60
           settings[:analysis][:analyzer][default_analyzer][:filter] << "searchkick_synonym"
 
           %w(word_start word_middle word_end).each do |type|
@@ -214,7 +262,7 @@ module Searchkick
         end
 
         if options[:special_characters] == false
-          settings[:analysis][:analyzer].each do |_, analyzer_settings|
+          settings[:analysis][:analyzer].each_value do |analyzer_settings|
             analyzer_settings[:filter].reject! { |f| f == "asciifolding" }
           end
         end
@@ -233,46 +281,42 @@ module Searchkick
         end
 
         mapping_options = Hash[
-          [:autocomplete, :suggest, :word, :text_start, :text_middle, :text_end, :word_start, :word_middle, :word_end, :highlight, :searchable, :filterable, :only_analyzed]
+          [:suggest, :word, :text_start, :text_middle, :text_end, :word_start, :word_middle, :word_end, :highlight, :searchable, :filterable]
             .map { |type| [type, (options[type] || []).map(&:to_s)] }
         ]
 
         word = options[:word] != false && (!options[:match] || options[:match] == :word)
 
+        mapping_options[:searchable].delete("_all")
+
+        analyzed_field_options = {type: default_type, index: index_true_value, analyzer: default_analyzer}
+
         mapping_options.values.flatten.uniq.each do |field|
           fields = {}
 
-          if mapping_options[:only_analyzed].include?(field) || (options.key?(:filterable) && !mapping_options[:filterable].include?(field))
-            fields[field] = {type: default_type, index: "no"}
+          if options.key?(:filterable) && !mapping_options[:filterable].include?(field)
+            fields[field] = {type: default_type, index: index_false_value}
           else
             fields[field] = keyword_mapping
           end
 
           if !options[:searchable] || mapping_options[:searchable].include?(field)
             if word
-              fields["analyzed"] = {type: default_type, index: "analyzed", analyzer: default_analyzer}
+              fields["analyzed"] = analyzed_field_options
 
               if mapping_options[:highlight].include?(field)
                 fields["analyzed"][:term_vector] = "with_positions_offsets"
               end
             end
 
-            mapping_options.except(:highlight, :searchable, :filterable, :only_analyzed, :word).each do |type, f|
+            mapping_options.except(:highlight, :searchable, :filterable, :word).each do |type, f|
               if options[:match] == type || f.include?(field)
-                fields[type] = {type: default_type, index: "analyzed", analyzer: "searchkick_#{type}_index"}
+                fields[type] = {type: default_type, index: index_true_value, analyzer: "searchkick_#{type}_index"}
               end
             end
           end
 
-          mapping[field] =
-            if below50
-              {
-                type: "multi_field",
-                fields: fields
-              }
-            elsif fields[field]
-              fields[field].merge(fields: fields.except(field))
-            end
+          mapping[field] = fields[field].merge(fields: fields.except(field))
         end
 
         (options[:locations] || []).map(&:to_s).each do |field|
@@ -286,11 +330,8 @@ module Searchkick
           mapping[field] = shape_options.merge(type: "geo_shape")
         end
 
-        (options[:unsearchable] || []).map(&:to_s).each do |field|
-          mapping[field] = {
-            type: default_type,
-            index: "no"
-          }
+        if options[:inheritance]
+          mapping[:type] = keyword_mapping
         end
 
         routing = {}
@@ -306,42 +347,32 @@ module Searchkick
           # http://www.elasticsearch.org/guide/reference/mapping/multi-field-type/
           # however, we can include the not_analyzed field in _all
           # and the _all index analyzer will take care of it
-          "{name}" => keyword_mapping.merge(include_in_all: !options[:searchable])
+          "{name}" => keyword_mapping
         }
 
-        if options.key?(:filterable)
-          dynamic_fields["{name}"] = {type: default_type, index: "no"}
+        if below60 && all
+          dynamic_fields["{name}"][:include_in_all] = !options[:searchable]
         end
 
-        dynamic_fields["{name}"][:ignore_above] = (options[:ignore_above] || 256) unless below22
+        if options.key?(:filterable)
+          dynamic_fields["{name}"] = {type: default_type, index: index_false_value}
+        end
 
         unless options[:searchable]
           if options[:match] && options[:match] != :word
-            dynamic_fields[options[:match]] = {type: default_type, index: "analyzed", analyzer: "searchkick_#{options[:match]}_index"}
+            dynamic_fields[options[:match]] = {type: default_type, index: index_true_value, analyzer: "searchkick_#{options[:match]}_index"}
           end
 
           if word
-            dynamic_fields["analyzed"] = {type: default_type, index: "analyzed"}
+            dynamic_fields["analyzed"] = analyzed_field_options
           end
         end
 
         # http://www.elasticsearch.org/guide/reference/mapping/multi-field-type/
-        multi_field =
-          if below50
-            {
-              type: "multi_field",
-              fields: dynamic_fields
-            }
-          else
-            dynamic_fields["{name}"].merge(fields: dynamic_fields.except("{name}"))
-          end
-
-        # TODO make dynamic
-        all_enabled = true
+        multi_field = dynamic_fields["{name}"].merge(fields: dynamic_fields.except("{name}"))
 
         mappings = {
-          _default_: {
-            _all: all_enabled ? {type: default_type, index: "analyzed", analyzer: default_analyzer} : {enabled: false},
+          index_type => {
             properties: mapping,
             _routing: routing,
             # https://gist.github.com/kimchy/2898285
@@ -355,7 +386,14 @@ module Searchkick
               }
             ]
           }
-        }.deep_merge(options[:mappings] || {})
+        }
+
+        if below60
+          all_enabled = all && (!options[:searchable] || options[:searchable].to_a.map(&:to_s).include?("_all"))
+          mappings[index_type][:_all] = all_enabled ? analyzed_field_options : {enabled: false}
+        end
+
+        mappings = mappings.deep_merge(options[:mappings] || {})
       end
 
       {

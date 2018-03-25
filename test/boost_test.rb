@@ -14,8 +14,6 @@ class BoostTest < Minitest::Test
   end
 
   def test_multiple_conversions
-    skip if elasticsearch_below14?
-
     store [
       {name: "Speaker A", conversions_a: {"speaker" => 1}, conversions_b: {"speaker" => 6}},
       {name: "Speaker B", conversions_a: {"speaker" => 2}, conversions_b: {"speaker" => 5}},
@@ -30,9 +28,21 @@ class BoostTest < Minitest::Test
     assert_order "speaker", ["Speaker A", "Speaker B", "Speaker C"], {conversions: "conversions_b"}, Speaker
   end
 
-  def test_conversions_stemmed
+  def test_multiple_conversions_with_boost_term
     store [
-      {name: "Tomato A", conversions: {"tomato" => 1, "tomatos" => 1, "Tomatoes" => 1}},
+      {name: "Speaker A", conversions_a: {"speaker" => 4, "speaker_1" => 1}},
+      {name: "Speaker B", conversions_a: {"speaker" => 3, "speaker_1" => 2}},
+      {name: "Speaker C", conversions_a: {"speaker" => 2, "speaker_1" => 3}},
+      {name: "Speaker D", conversions_a: {"speaker" => 1, "speaker_1" => 4}}
+    ], Speaker
+
+    assert_order "speaker", ["Speaker A", "Speaker B", "Speaker C", "Speaker D"], {conversions: "conversions_a"}, Speaker
+    assert_order "speaker", ["Speaker D", "Speaker C", "Speaker B", "Speaker A"], {conversions: "conversions_a", conversions_term: "speaker_1"}, Speaker
+  end
+
+  def test_conversions_case
+    store [
+      {name: "Tomato A", conversions: {"tomato" => 1, "TOMATO" => 1, "tOmAtO" => 1}},
       {name: "Tomato B", conversions: {"tomato" => 2}}
     ]
     assert_order "tomato", ["Tomato A", "Tomato B"]
@@ -64,26 +74,6 @@ class BoostTest < Minitest::Test
     assert_order "product", ["Product Conversions", "Product Boost"], boost: "orders_count"
   end
 
-  def test_user_id
-    store [
-      {name: "Tomato A"},
-      {name: "Tomato B", user_ids: [1, 2, 3]},
-      {name: "Tomato C"},
-      {name: "Tomato D"}
-    ]
-    assert_first "tomato", "Tomato B", user_id: 2
-  end
-
-  def test_personalize
-    store [
-      {name: "Tomato A"},
-      {name: "Tomato B", user_ids: [1, 2, 3]},
-      {name: "Tomato C"},
-      {name: "Tomato D"}
-    ]
-    assert_first "tomato", "Tomato B", personalize: {user_ids: 2}
-  end
-
   def test_boost_fields
     store [
       {name: "Red", color: "White"},
@@ -108,6 +98,14 @@ class BoostTest < Minitest::Test
     assert_order "red", ["Red", "White"], fields: [{"name^10" => :word_start}, "color"]
   end
 
+  # for issue #855
+  def test_apostrophes
+    store_names ["Valentine's Day Special"]
+    assert_search "Valentines", ["Valentine's Day Special"], fields: ["name^5"]
+    assert_search "Valentine's", ["Valentine's Day Special"], fields: ["name^5"]
+    assert_search "Valentine", ["Valentine's Day Special"], fields: ["name^5"]
+  end
+
   def test_boost_by
     store [
       {name: "Tomato A"},
@@ -116,6 +114,15 @@ class BoostTest < Minitest::Test
     ]
     assert_order "tomato", ["Tomato C", "Tomato B", "Tomato A"], boost_by: [:orders_count]
     assert_order "tomato", ["Tomato C", "Tomato B", "Tomato A"], boost_by: {orders_count: {factor: 10}}
+  end
+
+  def test_boost_by_missing
+    store [
+      {name: "Tomato A"},
+      {name: "Tomato B", orders_count: 10},
+    ]
+
+    assert_order "tomato", ["Tomato A", "Tomato B"], boost_by: {orders_count: {missing: 100}}
   end
 
   def test_boost_by_boost_mode_multiply
@@ -160,7 +167,38 @@ class BoostTest < Minitest::Test
     assert_order "san", ["San Francisco", "San Antonio", "San Marino"], boost_by_distance: {field: :location, origin: {lat: 37, lon: -122}, scale: "1000mi"}
   end
 
+  def test_boost_by_distance_v2
+    store [
+      {name: "San Francisco", latitude: 37.7833, longitude: -122.4167},
+      {name: "San Antonio", latitude: 29.4167, longitude: -98.5000},
+      {name: "San Marino", latitude: 43.9333, longitude: 12.4667}
+    ]
+    assert_order "san", ["San Francisco", "San Antonio", "San Marino"], boost_by_distance: {location: {origin: [37, -122], scale: "1000mi"}}
+  end
+
+  def test_boost_by_distance_v2_hash
+    store [
+      {name: "San Francisco", latitude: 37.7833, longitude: -122.4167},
+      {name: "San Antonio", latitude: 29.4167, longitude: -98.5000},
+      {name: "San Marino", latitude: 43.9333, longitude: 12.4667}
+    ]
+    assert_order "san", ["San Francisco", "San Antonio", "San Marino"], boost_by_distance: {location: {origin: {lat: 37, lon: -122}, scale: "1000mi"}}
+  end
+
+  def test_boost_by_distance_v2_factor
+    store [
+      {name: "San Francisco", latitude: 37.7833, longitude: -122.4167, found_rate: 0.1},
+      {name: "San Antonio", latitude: 29.4167, longitude: -98.5000, found_rate: 0.99},
+      {name: "San Marino", latitude: 43.9333, longitude: 12.4667, found_rate: 0.2}
+    ]
+
+    assert_order "san", ["San Antonio","San Francisco", "San Marino"], boost_by: {found_rate: {factor: 100}}, boost_by_distance: {location: {origin: [37, -122], scale: "1000mi"}}
+    assert_order "san", ["San Francisco", "San Antonio", "San Marino"], boost_by: {found_rate: {factor: 100}}, boost_by_distance: {location: {origin: [37, -122], scale: "1000mi", factor: 100}}
+  end
+
   def test_boost_by_indices
+    skip if cequel?
+
     store_names ["Rex"], Animal
     store_names ["Rexx"], Product
 

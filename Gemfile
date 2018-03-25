@@ -4,6 +4,13 @@ source "https://rubygems.org"
 gemspec
 
 gem "sqlite3"
-gem "activerecord", "~> 5.0.0"
+gem "activerecord"
 gem "gemoji-parser"
 gem "typhoeus"
+gem "activejob"
+gem "redis"
+gem "connection_pool"
+
+# kaminari
+gem "actionpack"
+gem "kaminari"

@@ -1,3 +1,149 @@
+## 3.0.2 [unreleased]
+
+- Added support for Korean and Vietnamese
+- Fixed `Unsupported argument type: Symbol` for async partial reindex
+- Fixed infinite recursion with multi search and misspellings below
+- Do not raise an error when `id` is indexed
+
+## 3.0.1
+
+- Added `scope` option for partial reindex
+- Added support for Japanese, Polish, and Ukrainian
+
+## 3.0.0
+
+- Added support for Chinese
+- No longer requires fields to query for Elasticsearch 6
+- Results can be marshaled by default (unless using `highlight` option)
+
+Breaking changes
+
+- Removed support for Elasticsearch 2
+- Removed support for ActiveRecord < 4.2 and Mongoid < 5
+- Types are no longer used
+- The `_all` field is disabled by default in Elasticsearch 5
+- Conversions are not stemmed by default
+- An `ArgumentError` is raised instead of a warning when options are incompatible with the `body` option
+- Removed `log` option from `boost_by`
+- Removed `Model.enable_search_callbacks`, `Model.disable_search_callbacks`, and `Model.search_callbacks?`
+- Removed `reindex_async` method, as `reindex` now defaults to callbacks mode specified on the model
+- Removed `async` option from `record.reindex`
+- Removed `search_hit` method - use `with_hit` instead
+- Removed `each_with_hit` - use `with_hit.each` instead
+- Removed `with_details` - use `with_highlights` instead
+- Bumped default `limit` to 10,000
+
+## 2.5.0
+
+- Try requests 3 times before raising error
+- Better exception when trying to access results for failed multi-search query
+- More efficient aggregations with `where` clauses
+- Added support for `faraday_middleware-aws-sigv4`
+- Added `credentials` option to `aws_credentials`
+- Added `modifier` option to `boost_by`
+- Added `scope_results` option
+- Added `factor` option to `boost_by_distance`
+
+## 2.4.0
+
+- Fixed `similar` for Elasticsearch 6
+- Added `inheritance` option
+- Added `_type` option
+- Fixed `Must specify fields to search` error when searching `*`
+
+## 2.3.2
+
+- Added `_all` and `default_fields` options
+- Added global `index_prefix` option
+- Added `wait` option to async reindex
+- Added `model_includes` option
+- Added `missing` option for `boost_by`
+- Raise error for `reindex_status` when Redis not configured
+- Warn when incompatible options used with `body` option
+- Fixed bug where `routing` and `type` options were silently ignored with `body` option
+- Fixed `reindex(async: true)` for non-numeric primary keys in Postgres
+
+## 2.3.1
+
+- Added support for `reindex(async: true)` for non-numeric primary keys
+- Added `conversions_term` option
+- Added support for passing fields to `suggest` option
+- Fixed `page_view_entries` for Kaminari
+
+## 2.3.0
+
+- Fixed analyzer on dynamically mapped fields
+- Fixed error with `similar` method and `_all` field
+- Throw error when fields are needed
+- Added `queue_name` option
+- No longer require synonyms to be lowercase
+
+## 2.2.1
+
+- Added `avg`, `cardinality`, `max`, `min`, and `sum` aggregations
+- Added `load: {dumpable: true}` option
+- Added `index_suffix` option
+- Accept string for `exclude` option
+
+## 2.2.0
+
+- Fixed bug with text values longer than 256 characters and `_all` field - see [#850](https://github.com/ankane/searchkick/issues/850)
+- Fixed issue with `_all` field in `searchable`
+- Fixed `exclude` option with `word_start`
+
+## 2.1.1
+
+- Fixed duplicate notifications
+- Added support for `connection_pool`
+- Added `exclude` option
+
+## 2.1.0
+
+- Background reindexing and queues are officially supported
+- Log updates and deletes
+
+## 2.0.4
+
+- Added support for queuing updates [experimental]
+- Added `refresh_interval` option to `reindex`
+- Prefer `search_index` over `searchkick_index`
+
+## 2.0.3
+
+- Added `async` option to `reindex` [experimental]
+- Added `misspellings?` method to results
+
+## 2.0.2
+
+- Added `retain` option to `reindex`
+- Added support for attributes in highlight tags
+- Fixed potentially silent errors in reindex job
+- Improved syntax for `boost_by_distance`
+
+## 2.0.1
+
+- Added `search_hit` and `search_highlights` methods to models
+- Improved reindex performance
+
+## 2.0.0
+
+- Added support for `reindex` on associations
+
+Breaking changes
+
+- Removed support for Elasticsearch 1 as it reaches [end of life](https://www.elastic.co/support/eol)
+- Removed facets, legacy options, and legacy methods
+- Invalid options now throw an `ArgumentError`
+- The `query` and `json` options have been removed in favor of `body`
+- The `include` option has been removed in favor of `includes`
+- The `personalize` option has been removed in favor of `boost_where`
+- The `partial` option has been removed in favor of `operator`
+- Renamed `select_v2` to `select` (legacy `select` no longer available)
+- The `_all` field is disabled if `searchable` option is used (for performance)
+- The `partial_reindex(:method_name)` method has been replaced with `reindex(:method_name)`
+- The `unsearchable` and `only_analyzed` options have been removed in favor of `searchable` and `filterable`
+- `load: false` no longer returns an array in Elasticsearch 2
+
 ## 1.5.1
 
 - Added `client_options`

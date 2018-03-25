@@ -1,10 +1,14 @@
 require_relative "test_helper"
 
 class InheritanceTest < Minitest::Test
+  def setup
+    skip if defined?(Cequel)
+    super
+  end
+
   def test_child_reindex
     store_names ["Max"], Cat
     assert Dog.reindex
-    Animal.searchkick_index.refresh
     assert_equal 1, Animal.search("*").size
   end
 
@@ -40,13 +44,13 @@ class InheritanceTest < Minitest::Test
   def test_child_autocomplete
     store_names ["Max"], Cat
     store_names ["Mark"], Dog
-    assert_equal ["Max"], Cat.search("ma", fields: [:name], autocomplete: true).map(&:name)
+    assert_equal ["Max"], Cat.search("ma", fields: [:name], match: :text_start).map(&:name)
   end
 
   def test_parent_autocomplete
     store_names ["Max"], Cat
     store_names ["Bear"], Dog
-    assert_equal ["Bear"], Animal.search("bea", fields: [:name], autocomplete: true).map(&:name).sort
+    assert_equal ["Bear"], Animal.search("bea", fields: [:name], match: :text_start).map(&:name).sort
   end
 
   # def test_child_suggest
@@ -65,7 +69,7 @@ class InheritanceTest < Minitest::Test
     store_names ["Bear A"], Cat
     store_names ["Bear B"], Dog
     Animal.reindex
-    assert_equal 1, Dog.search("bear").size
+    assert_equal 2, Animal.search("bear").size
   end
 
   # TODO move somewhere better

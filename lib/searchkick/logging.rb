@@ -45,14 +45,68 @@ module Searchkick
       end
     end
 
-    def import(records)
+    def update_record(record, method_name)
+      event = {
+        name: "#{record.searchkick_klass.name} Update",
+        id: search_id(record)
+      }
+      if Searchkick.callbacks_value == :bulk
+        super
+      else
+        ActiveSupport::Notifications.instrument("request.searchkick", event) do
+          super
+        end
+      end
+    end
+
+    def bulk_index(records)
       if records.any?
         event = {
           name: "#{records.first.searchkick_klass.name} Import",
           count: records.size
         }
-        ActiveSupport::Notifications.instrument("request.searchkick", event) do
-          super(records)
+        event[:id] = search_id(records.first) if records.size == 1
+        if Searchkick.callbacks_value == :bulk
+          super
+        else
+          ActiveSupport::Notifications.instrument("request.searchkick", event) do
+            super
+          end
+        end
+      end
+    end
+    alias_method :import, :bulk_index
+
+    def bulk_update(records, *args)
+      if records.any?
+        event = {
+          name: "#{records.first.searchkick_klass.name} Update",
+          count: records.size
+        }
+        event[:id] = search_id(records.first) if records.size == 1
+        if Searchkick.callbacks_value == :bulk
+          super
+        else
+          ActiveSupport::Notifications.instrument("request.searchkick", event) do
+            super
+          end
+        end
+      end
+    end
+
+    def bulk_delete(records)
+      if records.any?
+        event = {
+          name: "#{records.first.searchkick_klass.name} Delete",
+          count: records.size
+        }
+        event[:id] = search_id(records.first) if records.size == 1
+        if Searchkick.callbacks_value == :bulk
+          super
+        else
+          ActiveSupport::Notifications.instrument("request.searchkick", event) do
+            super
+          end
         end
       end
     end
@@ -113,7 +167,7 @@ module Searchkick
 
       # no easy way to tell which host the client will use
       host = Searchkick.client.transport.hosts.first
-      debug "  #{color(name, YELLOW, true)}  curl #{host[:protocol]}://#{host[:host]}:#{host[:port]}/#{CGI.escape(index)}#{type ? "/#{type.map { |t| CGI.escape(t) }.join(',')}" : ''}/_search?pretty -d '#{payload[:query][:body].to_json}'"
+      debug "  #{color(name, YELLOW, true)}  curl #{host[:protocol]}://#{host[:host]}:#{host[:port]}/#{CGI.escape(index)}#{type ? "/#{type.map { |t| CGI.escape(t) }.join(',')}" : ''}/_search?pretty -H 'Content-Type: application/json' -d '#{payload[:query][:body].to_json}'"
     end
 
     def request(event)
@@ -135,7 +189,7 @@ module Searchkick
 
       # no easy way to tell which host the client will use
       host = Searchkick.client.transport.hosts.first
-      debug "  #{color(name, YELLOW, true)}  curl #{host[:protocol]}://#{host[:host]}:#{host[:port]}/_msearch?pretty -d '#{payload[:body]}'"
+      debug "  #{color(name, YELLOW, true)}  curl #{host[:protocol]}://#{host[:host]}:#{host[:port]}/_msearch?pretty -H 'Content-Type: application/json' -d '#{payload[:body]}'"
     end
   end
 
@@ -178,10 +232,11 @@ module Searchkick
     end
   end
 end
-Searchkick::Query.send(:prepend, Searchkick::QueryWithInstrumentation)
-Searchkick::Index.send(:prepend, Searchkick::IndexWithInstrumentation)
-Searchkick::Indexer.send(:prepend, Searchkick::IndexerWithInstrumentation)
-Searchkick.singleton_class.send(:prepend, Searchkick::SearchkickWithInstrumentation)
+
+Searchkick::Query.prepend(Searchkick::QueryWithInstrumentation)
+Searchkick::Index.prepend(Searchkick::IndexWithInstrumentation)
+Searchkick::Indexer.prepend(Searchkick::IndexerWithInstrumentation)
+Searchkick.singleton_class.prepend(Searchkick::SearchkickWithInstrumentation)
 Searchkick::LogSubscriber.attach_to :searchkick
 ActiveSupport.on_load(:action_controller) do
   include Searchkick::ControllerRuntime

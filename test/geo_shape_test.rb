@@ -108,7 +108,7 @@ class GeoShapeTest < Minitest::Test
           geo_shape: {
             type: "envelope",
             relation: "within",
-            coordinates: [[20,50], [50,20]]
+            coordinates: [[20, 50], [50, 20]]
           }
         }
       }
@@ -142,7 +142,6 @@ class GeoShapeTest < Minitest::Test
   end
 
   def test_contains
-    skip if elasticsearch_below22?
     assert_search "*", ["Region C"], {
       where: {
         territory: {

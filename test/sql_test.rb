@@ -1,16 +1,15 @@
 require_relative "test_helper"
 
 class SqlTest < Minitest::Test
-  def test_partial
-    store_names ["Honey"]
-    assert_search "fresh honey", []
-    assert_search "fresh honey", ["Honey"], partial: true
-  end
-
   def test_operator
     store_names ["Honey"]
     assert_search "fresh honey", []
     assert_search "fresh honey", ["Honey"], operator: "or"
+  end
+
+  def test_operator_scoring
+    store_names ["Big Red Circle", "Big Green Circle", "Small Orange Circle"]
+    assert_order "big red circle", ["Big Red Circle", "Big Green Circle", "Small Orange Circle"], operator: "or"
   end
 
   def test_fields_operator
@@ -90,32 +89,28 @@ class SqlTest < Minitest::Test
   # select
 
   def test_select
-    skip unless elasticsearch_below50?
     store [{name: "Product A", store_id: 1}]
     result = Product.search("product", load: false, select: [:name, :store_id]).first
     assert_equal %w(id name store_id), result.keys.reject { |k| k.start_with?("_") }.sort
-    assert_equal ["Product A"], result.name # this is not great
-    assert_equal [1], result.store_id
+    assert_equal "Product A", result.name
+    assert_equal 1, result.store_id
   end
 
   def test_select_array
-    skip unless elasticsearch_below50?
     store [{name: "Product A", user_ids: [1, 2]}]
     result = Product.search("product", load: false, select: [:user_ids]).first
     assert_equal [1, 2], result.user_ids
   end
 
   def test_select_single_field
-    skip unless elasticsearch_below50?
     store [{name: "Product A", store_id: 1}]
     result = Product.search("product", load: false, select: :name).first
     assert_equal %w(id name), result.keys.reject { |k| k.start_with?("_") }.sort
-    assert_equal ["Product A"], result.name
+    assert_equal "Product A", result.name
     assert_nil result.store_id
   end
 
   def test_select_all
-    skip unless elasticsearch_below50?
     store [{name: "Product A", user_ids: [1, 2]}]
     hit = Product.search("product", select: true).hits.first
     assert_equal hit["_source"]["name"], "Product A"
@@ -123,102 +118,33 @@ class SqlTest < Minitest::Test
   end
 
   def test_select_none
-    skip unless elasticsearch_below50?
     store [{name: "Product A", user_ids: [1, 2]}]
     hit = Product.search("product", select: []).hits.first
     assert_nil hit["_source"]
-  end
-
-  # select_v2
-
-  def test_select_v2
-    store [{name: "Product A", store_id: 1}]
-    result = Product.search("product", load: false, select_v2: [:name, :store_id]).first
-    assert_equal %w(id name store_id), result.keys.reject { |k| k.start_with?("_") }.sort
-    assert_equal "Product A", result.name
-    assert_equal 1, result.store_id
-  end
-
-  def test_select_v2_array
-    store [{name: "Product A", user_ids: [1, 2]}]
-    result = Product.search("product", load: false, select_v2: [:user_ids]).first
-    assert_equal [1, 2], result.user_ids
-  end
-
-  def test_select_v2_single_field
-    store [{name: "Product A", store_id: 1}]
-    result = Product.search("product", load: false, select_v2: :name).first
-    assert_equal %w(id name), result.keys.reject { |k| k.start_with?("_") }.sort
-    assert_equal "Product A", result.name
-    assert_nil result.store_id
-  end
-
-  def test_select_v2_all
-    store [{name: "Product A", user_ids: [1, 2]}]
-    hit = Product.search("product", select_v2: true).hits.first
-    assert_equal hit["_source"]["name"], "Product A"
-    assert_equal hit["_source"]["user_ids"], [1, 2]
-  end
-
-  def test_select_v2_none
-    store [{name: "Product A", user_ids: [1, 2]}]
-    hit = Product.search("product", select_v2: []).hits.first
-    assert_nil hit["_source"]
-    hit = Product.search("product", select_v2: false).hits.first
+    hit = Product.search("product", select: false).hits.first
     assert_nil hit["_source"]
   end
 
-  def test_select_v2_include
-    skip unless elasticsearch_below50?
+  def test_select_includes
     store [{name: "Product A", user_ids: [1, 2]}]
-    result = Product.search("product", load: false, select_v2: {include: [:name]}).first
+    result = Product.search("product", load: false, select: {includes: [:name]}).first
     assert_equal %w(id name), result.keys.reject { |k| k.start_with?("_") }.sort
     assert_equal "Product A", result.name
     assert_nil result.store_id
   end
 
-  def test_select_v2_exclude
-    skip unless elasticsearch_below50?
+  def test_select_excludes
     store [{name: "Product A", user_ids: [1, 2], store_id: 1}]
-    result = Product.search("product", load: false, select_v2: {exclude: [:name]}).first
+    result = Product.search("product", load: false, select: {excludes: [:name]}).first
     assert_nil result.name
     assert_equal [1, 2], result.user_ids
     assert_equal 1, result.store_id
   end
 
-  def test_select_v2_include_and_exclude
-    skip unless elasticsearch_below50?
+  def test_select_include_and_excludes
     # let's take this to the next level
     store [{name: "Product A", user_ids: [1, 2], store_id: 1}]
-    result = Product.search("product", load: false, select_v2: {include: [:store_id], exclude: [:name]}).first
-    assert_equal 1, result.store_id
-    assert_nil result.name
-    assert_nil result.user_ids
-  end
-
-  def test_select_v2_includes
-    skip if elasticsearch_below50?
-    store [{name: "Product A", user_ids: [1, 2]}]
-    result = Product.search("product", load: false, select_v2: {includes: [:name]}).first
-    assert_equal %w(id name), result.keys.reject { |k| k.start_with?("_") }.sort
-    assert_equal "Product A", result.name
-    assert_nil result.store_id
-  end
-
-  def test_select_v2_excludes
-    skip if elasticsearch_below50?
-    store [{name: "Product A", user_ids: [1, 2], store_id: 1}]
-    result = Product.search("product", load: false, select_v2: {excludes: [:name]}).first
-    assert_nil result.name
-    assert_equal [1, 2], result.user_ids
-    assert_equal 1, result.store_id
-  end
-
-  def test_select_v2_include_and_excludes
-    skip if elasticsearch_below50?
-    # let's take this to the next level
-    store [{name: "Product A", user_ids: [1, 2], store_id: 1}]
-    result = Product.search("product", load: false, select_v2: {includes: [:store_id], excludes: [:name]}).first
+    result = Product.search("product", load: false, select: {includes: [:store_id], excludes: [:name]}).first
     assert_equal 1, result.store_id
     assert_nil result.name
     assert_nil result.user_ids
@@ -237,5 +163,28 @@ class SqlTest < Minitest::Test
     skip unless defined?(ActiveRecord)
     store_names ["Product A"]
     assert Product.search("product", includes: [:store]).first.association(:store).loaded?
+  end
+
+  def test_model_includes
+    skip unless defined?(ActiveRecord)
+
+    store_names ["Product A"]
+    store_names ["Store A"], Store
+
+    associations = {Product => [:store], Store => [:products]}
+    result = Searchkick.search("*", index_name: [Product, Store], model_includes: associations)
+
+    assert_equal 2, result.length
+
+    result.group_by(&:class).each_pair do |klass, records|
+      assert records.first.association(associations[klass].first).loaded?
+    end
+  end
+
+  def test_scope_results
+    skip unless defined?(ActiveRecord)
+
+    store_names ["Product A", "Product B"]
+    assert_search "product", ["Product A"], scope_results: ->(r) { r.where(name: "Product A") }
   end
 end

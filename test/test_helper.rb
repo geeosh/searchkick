@@ -6,70 +6,52 @@ require "logger"
 require "active_support/core_ext" if defined?(NoBrainer)
 require "active_support/notifications"
 
+Searchkick.index_suffix = ENV["TEST_ENV_NUMBER"]
+
 ENV["RACK_ENV"] = "test"
 
 Minitest::Test = Minitest::Unit::TestCase unless defined?(Minitest::Test)
 
-File.delete("elasticsearch.log") if File.exist?("elasticsearch.log")
+if !defined?(ParallelTests) || ParallelTests.first_process?
+  File.delete("elasticsearch.log") if File.exist?("elasticsearch.log")
+end
+
 Searchkick.client.transport.logger = Logger.new("elasticsearch.log")
 Searchkick.search_timeout = 5
+
+if defined?(Redis)
+  if defined?(ConnectionPool)
+    Searchkick.redis = ConnectionPool.new { Redis.new }
+  else
+    Searchkick.redis = Redis.new
+  end
+end
 
 puts "Running against Elasticsearch #{Searchkick.server_version}"
 
 I18n.config.enforce_available_locales = true
 
-ActiveJob::Base.logger = nil if defined?(ActiveJob)
-ActiveSupport::LogSubscriber.logger = Logger.new(STDOUT) if ENV["NOTIFICATIONS"]
-
-def elasticsearch_below50?
-  Searchkick.server_below?("5.0.0-alpha1")
+if defined?(ActiveJob)
+  ActiveJob::Base.logger = nil
+  ActiveJob::Base.queue_adapter = :inline
 end
 
-def elasticsearch_below22?
-  Searchkick.server_below?("2.2.0")
-end
-
-def elasticsearch_below20?
-  Searchkick.server_below?("2.0.0")
-end
-
-def elasticsearch_below14?
-  Searchkick.server_below?("1.4.0")
-end
-
-def mongoid2?
-  defined?(Mongoid) && Mongoid::VERSION.starts_with?("2.")
-end
+ActiveSupport::LogSubscriber.logger = ActiveSupport::Logger.new(STDOUT) if ENV["NOTIFICATIONS"]
 
 def nobrainer?
   defined?(NoBrainer)
 end
 
-def activerecord_below41?
-  defined?(ActiveRecord) && Gem::Version.new(ActiveRecord::VERSION::STRING) < Gem::Version.new("4.1.0")
+def cequel?
+  defined?(Cequel)
 end
 
 if defined?(Mongoid)
   Mongoid.logger.level = Logger::INFO
   Mongo::Logger.logger.level = Logger::INFO if defined?(Mongo::Logger)
 
-  if mongoid2?
-    # enable comparison of BSON::ObjectIds
-    module BSON
-      class ObjectId
-        def <=>(other)
-          data <=> other.data
-        end
-      end
-    end
-  end
-
   Mongoid.configure do |config|
-    if mongoid2?
-      config.master = Mongo::Connection.new.db("searchkick_test")
-    else
-      config.connect_to "searchkick_test"
-    end
+    config.connect_to "searchkick_test"
   end
 
   class Product
@@ -121,6 +103,18 @@ if defined?(Mongoid)
 
   class Cat < Animal
   end
+
+  class Sku
+    include Mongoid::Document
+
+    field :name
+  end
+
+  class Song
+    include Mongoid::Document
+
+    field :name
+  end
 elsif defined?(NoBrainer)
   NoBrainer.configure do |config|
     config.app_name = :searchkick
@@ -132,7 +126,7 @@ elsif defined?(NoBrainer)
     include NoBrainer::Document::Timestamps
 
     field :id,           type: Object
-    field :name,         type: String
+    field :name,         type: Text
     field :in_stock,     type: Boolean
     field :backordered,  type: Boolean
     field :orders_count, type: Integer
@@ -181,6 +175,116 @@ elsif defined?(NoBrainer)
 
   class Cat < Animal
   end
+
+  class Sku
+    include NoBrainer::Document
+
+    field :id,   type: String
+    field :name, type: String
+  end
+
+  class Song
+    include NoBrainer::Document
+
+    field :id,   type: Object
+    field :name, type: String
+  end
+elsif defined?(Cequel)
+  cequel =
+    Cequel.connect(
+      host: "127.0.0.1",
+      port: 9042,
+      keyspace: "searchkick_test",
+      default_consistency: :all
+    )
+  # cequel.logger = ActiveSupport::Logger.new(STDOUT)
+  cequel.schema.drop! if cequel.schema.exists?
+  cequel.schema.create!
+  Cequel::Record.connection = cequel
+
+  class Product
+    include Cequel::Record
+
+    key :id, :uuid, auto: true
+    column :name, :text, index: true
+    column :store_id, :int
+    column :in_stock, :boolean
+    column :backordered, :boolean
+    column :orders_count, :int
+    column :found_rate, :decimal
+    column :price, :int
+    column :color, :text
+    column :latitude, :decimal
+    column :longitude, :decimal
+    column :description, :text
+    column :alt_description, :text
+    column :created_at, :timestamp
+  end
+
+  class Store
+    include Cequel::Record
+
+    key :id, :timeuuid, auto: true
+    column :name, :text
+
+    # has issue with id serialization
+    def search_data
+      {
+        name: name
+      }
+    end
+  end
+
+  class Region
+    include Cequel::Record
+
+    key :id, :timeuuid, auto: true
+    column :name, :text
+    column :text, :text
+  end
+
+  class Speaker
+    include Cequel::Record
+
+    key :id, :timeuuid, auto: true
+    column :name, :text
+  end
+
+  class Animal
+    include Cequel::Record
+
+    key :id, :timeuuid, auto: true
+    column :name, :text
+
+    # has issue with id serialization
+    def search_data
+      {
+        name: name
+      }
+    end
+  end
+
+  class Dog < Animal
+  end
+
+  class Cat < Animal
+  end
+
+  class Sku
+    include Cequel::Record
+
+    key :id, :uuid
+    column :name, :text
+  end
+
+  class Song
+    include Cequel::Record
+
+    key :id, :timeuuid, auto: true
+    column :name, :text
+  end
+
+  [Product, Store, Region, Speaker, Animal, Sku, Song].each(&:synchronize_schema)
 else
   require "active_record"
 
@@ -267,6 +371,14 @@ else
     t.string :type
   end
 
+  ActiveRecord::Migration.create_table :skus, id: :uuid do |t|
+    t.string :name
+  end
+
+  ActiveRecord::Migration.create_table :songs do |t|
+    t.string :name
+  end
+
   class Product < ActiveRecord::Base
     belongs_to :store
   end
@@ -289,6 +401,12 @@ else
 
   class Cat < Animal
   end
+
+  class Sku < ActiveRecord::Base
+  end
+
+  class Song < ActiveRecord::Base
+  end
 end
 
 class Product
@@ -296,17 +414,16 @@ class Product
     synonyms: [
       ["clorox", "bleach"],
       ["scallion", "greenonion"],
-      ["saranwrap", "plasticwrap"],
+      ["saran wrap", "plastic wrap"],
       ["qtip", "cottonswab"],
       ["burger", "hamburger"],
       ["bandaid", "bandag"],
+      ["UPPERCASE", "lowercase"],
       "lightbulb => led,lightbulb",
       "lightbulb => halogenlamp"
     ],
-    autocomplete: [:name],
     suggest: [:name, :color],
     conversions: [:conversions],
-    personalize: :user_ids,
     locations: [:location, :multiple_locations],
     text_start: [:name],
     text_middle: [:name],
@@ -315,17 +432,14 @@ class Product
     word_middle: [:name],
     word_end: [:name],
     highlight: [:name],
-    searchable: [:name, :color],
-    default_fields: [:name, :color],
     filterable: [:name, :color, :description],
-    # unsearchable: [:description],
-    # only_analyzed: [:alt_description],
+    similarity: "BM25",
     match: ENV["MATCH"] ? ENV["MATCH"].to_sym : nil
 
   attr_accessor :conversions, :user_ids, :aisle, :details
 
   def search_data
-    serializable_hash.except("id").merge(
+    serializable_hash.except("id", "_id").merge(
       conversions: conversions,
       user_ids: user_ids,
       location: {lat: latitude, lon: longitude},
@@ -353,7 +467,7 @@ class Store
     mappings: {
       store: {
         properties: {
-          name: elasticsearch_below50? ? {type: "string", analyzer: "keyword"} : {type: "keyword"}
+          name: {type: "keyword"}
         }
       }
     }
@@ -391,7 +505,7 @@ class Speaker
   attr_accessor :conversions_a, :conversions_b, :aisle
 
   def search_data
-    serializable_hash.except("id").merge(
+    serializable_hash.except("id", "_id").merge(
       conversions_a: conversions_a,
       conversions_b: conversions_b,
       aisle: aisle
@@ -401,10 +515,20 @@ end
 
 class Animal
   searchkick \
-    autocomplete: [:name],
+    inheritance: true,
+    text_start: [:name],
     suggest: [:name],
-    index_name: -> { "#{name.tableize}-#{Date.today.year}" }
+    index_name: -> { "#{name.tableize}-#{Date.today.year}#{Searchkick.index_suffix}" },
+    callbacks: defined?(ActiveJob) ? :async : true
     # wordnet: true
+end
+
+class Sku
+  searchkick callbacks: defined?(ActiveJob) ? :async : true
+end
+
+class Song
+  searchkick
 end
 
 Product.searchkick_index.delete if Product.searchkick_index.exists?
@@ -453,5 +577,17 @@ class Minitest::Test
 
   def assert_first(term, expected, options = {}, klass = Product)
     assert_equal expected, klass.search(term, options).map(&:name).first
+  end
+
+  def with_options(klass, options)
+    previous_options = klass.searchkick_options.dup
+    begin
+      klass.searchkick_options.merge!(options)
+      klass.reindex
+      yield
+    ensure
+      klass.searchkick_options.clear
+      klass.searchkick_options.merge!(previous_options)
+    end
   end
 end

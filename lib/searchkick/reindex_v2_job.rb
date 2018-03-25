@@ -1,23 +1,36 @@
 module Searchkick
   class ReindexV2Job < ActiveJob::Base
-    queue_as :searchkick
+    RECORD_NOT_FOUND_CLASSES = [
+      "ActiveRecord::RecordNotFound",
+      "Mongoid::Errors::DocumentNotFound",
+      "NoBrainer::Error::DocumentNotFound",
+      "Cequel::Record::RecordNotFound"
+    ]
 
-    def perform(klass, id)
+    queue_as { Searchkick.queue_name }
+
+    def perform(klass, id, method_name = nil)
       model = klass.constantize
-      record = model.find(id) rescue nil # TODO fix lazy coding
-      index = model.searchkick_index
-      if !record || !record.should_index?
-        # hacky
-        record ||= model.new
-        record.id = id
+      record =
         begin
-          index.remove record
-        rescue Elasticsearch::Transport::Transport::Errors::NotFound
-          # do nothing
+          if model.respond_to?(:unscoped)
+            model.unscoped.find(id)
+          else
+            model.find(id)
+          end
+        rescue => e
+          # check by name rather than rescue directly so we don't need
+          # to determine which classes are defined
+          raise e unless RECORD_NOT_FOUND_CLASSES.include?(e.class.name)
+          nil
         end
-      else
-        index.store record
+
+      unless record
+        record = model.new
+        record.id = id
       end
+
+      RecordIndexer.new(record).reindex(method_name, mode: true)
     end
   end
 end

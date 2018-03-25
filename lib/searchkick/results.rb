@@ -15,11 +15,6 @@ module Searchkick
       @options = options
     end
 
-    # experimental: may not make next release
-    def records
-      @records ||= results_query(klass, hits)
-    end
-
     def results
       @results ||= begin
         if options[:load]
@@ -32,7 +27,16 @@ module Searchkick
 
           # sort
           hits.map do |hit|
-            results[hit["_type"]][hit["_id"].to_s]
+            result = results[hit["_type"]][hit["_id"].to_s]
+            if result && !(options[:load].is_a?(Hash) && options[:load][:dumpable])
+              if hit["highlight"] && !result.respond_to?(:search_highlights)
+                highlights = Hash[hit["highlight"].map { |k, v| [(options[:json] ? k : k.sub(/\.#{@options[:match_suffix]}\z/, "")).to_sym, v.first] }]
+                result.define_singleton_method(:search_highlights) do
+                  highlights
+                end
+              end
+            end
+            result
           end.compact
         else
           hits.map do |hit|
@@ -53,7 +57,7 @@ module Searchkick
             end
 
             result["id"] ||= result["_id"] # needed for legacy reasons
-            Hashie::Mash.new(result)
+            HashWrapper.new(result)
           end
         end
       end
@@ -62,27 +66,11 @@ module Searchkick
     def suggestions
       if response["suggest"]
         response["suggest"].values.flat_map { |v| v.first["options"] }.sort_by { |o| -o["score"] }.map { |o| o["text"] }.uniq
+      elsif options[:term] == "*"
+        []
       else
         raise "Pass `suggest: true` to the search method for suggestions"
       end
-    end
-
-    def each_with_hit(&block)
-      results.zip(hits).each(&block)
-    end
-
-    def with_details
-      each_with_hit.map do |model, hit|
-        details = {}
-        if hit["highlight"]
-          details[:highlight] = Hash[hit["highlight"].map { |k, v| [(options[:json] ? k : k.sub(/\.#{@options[:match_suffix]}\z/, "")).to_sym, v.first] }]
-        end
-        [model, details]
-      end
-    end
-
-    def facets
-      response["facets"]
     end
 
     def aggregations
@@ -116,8 +104,14 @@ module Searchkick
       klass.model_name
     end
 
-    def entry_name
-      model_name.human.downcase
+    def entry_name(options = {})
+      if options.empty?
+        # backward compatibility
+        model_name.human.downcase
+      else
+        default = options[:count] == 1 ? model_name.human : model_name.human.pluralize
+        model_name.human(options.reverse_merge(default: default))
+      end
     end
 
     def total_count
@@ -170,41 +164,66 @@ module Searchkick
     end
 
     def hits
-      @response["hits"]["hits"]
+      if error
+        raise Searchkick::Error, "Query error - use the error method to view it"
+      else
+        @response["hits"]["hits"]
+      end
+    end
+
+    def with_hit
+      results.zip(hits)
+    end
+
+    def highlights(multiple: false)
+      hits.map do |hit|
+        Hash[hit["highlight"].map { |k, v| [(options[:json] ? k : k.sub(/\.#{@options[:match_suffix]}\z/, "")).to_sym, multiple ? v : v.first] }]
+      end
+    end
+
+    def with_highlights(multiple: false)
+      results.zip(highlights(multiple: multiple))
+    end
+
+    def misspellings?
+      @options[:misspellings]
     end
 
     private
 
     def results_query(records, hits)
       ids = hits.map { |hit| hit["_id"] }
+      if options[:includes] || options[:model_includes]
+        included_relations = []
+        combine_includes(included_relations, options[:includes])
+        combine_includes(included_relations, options[:model_includes][records]) if options[:model_includes]
 
-      if options[:includes]
         records =
           if defined?(NoBrainer::Document) && records < NoBrainer::Document
             if Gem.loaded_specs["nobrainer"].version >= Gem::Version.new("0.21")
-              records.eager_load(options[:includes])
+              records.eager_load(included_relations)
             else
-              records.preload(options[:includes])
+              records.preload(included_relations)
             end
           else
-            records.includes(options[:includes])
+            records.includes(included_relations)
           end
       end
 
-      if records.respond_to?(:primary_key) && records.primary_key
-        # ActiveRecord
-        records.where(records.primary_key => ids)
-      elsif records.respond_to?(:all) && records.all.respond_to?(:for_ids)
-        # Mongoid 2
-        records.all.for_ids(ids)
-      elsif records.respond_to?(:queryable)
-        # Mongoid 3+
-        records.queryable.for_ids(ids)
-      elsif records.respond_to?(:unscoped) && [:preload, :eager_load].any? { |m| records.all.respond_to?(m) }
-        # Nobrainer
-        records.unscoped.where(:id.in => ids)
-      else
-        raise "Not sure how to load records"
+      if options[:scope_results]
+        records = options[:scope_results].call(records)
+      end
+
+      Searchkick.load_records(records, ids)
+    end
+
+    def combine_includes(result, inc)
+      if inc
+        if inc.is_a?(Array)
+          result.concat(inc)
+        else
+          result << inc
+        end
       end
     end
 

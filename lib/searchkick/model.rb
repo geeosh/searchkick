@@ -1,131 +1,104 @@
 module Searchkick
-  module Reindex; end # legacy for Searchjoy
-
   module Model
-    def searchkick(options = {})
+    def searchkick(**options)
+      options = Searchkick.model_options.merge(options)
+
+      unknown_keywords = options.keys - [:_all, :_type, :batch_size, :callbacks, :conversions, :default_fields,
+        :filterable, :geo_shape, :highlight, :ignore_above, :index_name, :index_prefix, :inheritance, :language,
+        :locations, :mappings, :match, :merge_mappings, :routing, :searchable, :settings, :similarity,
+        :special_characters, :stem_conversions, :suggest, :synonyms, :text_end,
+        :text_middle, :text_start, :word, :wordnet, :word_end, :word_middle, :word_start]
+      raise ArgumentError, "unknown keywords: #{unknown_keywords.join(", ")}" if unknown_keywords.any?
+
       raise "Only call searchkick once per model" if respond_to?(:searchkick_index)
 
       Searchkick.models << self
 
+      options[:_type] ||= -> { searchkick_index.klass_document_type(self, true) }
+
+      callbacks = options.key?(:callbacks) ? options[:callbacks] : true
+      unless [true, false, :async, :queue].include?(callbacks)
+        raise ArgumentError, "Invalid value for callbacks"
+      end
+
+      index_name =
+        if options[:index_name]
+          options[:index_name]
+        elsif options[:index_prefix].respond_to?(:call)
+          -> { [options[:index_prefix].call, model_name.plural, Searchkick.env, Searchkick.index_suffix].compact.join("_") }
+        else
+          [options.key?(:index_prefix) ? options[:index_prefix] : Searchkick.index_prefix, model_name.plural, Searchkick.env, Searchkick.index_suffix].compact.join("_")
+        end
+
       class_eval do
         cattr_reader :searchkick_options, :searchkick_klass
 
-        callbacks = options.key?(:callbacks) ? options[:callbacks] : true
-
         class_variable_set :@@searchkick_options, options.dup
         class_variable_set :@@searchkick_klass, self
-        class_variable_set :@@searchkick_callbacks, callbacks
-        class_variable_set :@@searchkick_index, options[:index_name] ||
-          (options[:index_prefix].respond_to?(:call) && proc { [options[:index_prefix].call, model_name.plural, Searchkick.env].compact.join("_") }) ||
-          [options[:index_prefix], model_name.plural, Searchkick.env].compact.join("_")
+        class_variable_set :@@searchkick_index, index_name
+        class_variable_set :@@searchkick_index_cache, {}
 
         class << self
-          def searchkick_search(term = nil, options = {}, &block)
-            searchkick_index.search_model(self, term, options, &block)
+          def searchkick_search(term = "*", **options, &block)
+            Searchkick.search(term, {model: self}.merge(options), &block)
           end
           alias_method Searchkick.search_method_name, :searchkick_search if Searchkick.search_method_name
 
           def searchkick_index
-            index = class_variable_get :@@searchkick_index
-            index = index.call if index.respond_to? :call
-            Searchkick::Index.new(index, searchkick_options)
+            index = class_variable_get(:@@searchkick_index)
+            index = index.call if index.respond_to?(:call)
+            index_cache = class_variable_get(:@@searchkick_index_cache)
+            index_cache[index] ||= Searchkick::Index.new(index, searchkick_options)
           end
-
-          def enable_search_callbacks
-            class_variable_set :@@searchkick_callbacks, true
-          end
-
-          def disable_search_callbacks
-            class_variable_set :@@searchkick_callbacks, false
-          end
-
-          def search_callbacks?
-            class_variable_get(:@@searchkick_callbacks) && Searchkick.callbacks?
-          end
+          alias_method :search_index, :searchkick_index unless method_defined?(:search_index)
 
           def searchkick_reindex(method_name = nil, **options)
-            if method_name
-              searchkick_index.import_scope(searchkick_klass, method_name: method_name)
-              searchkick_index.refresh
-              true
-            else
-              unless options[:accept_danger]
-                if (respond_to?(:current_scope) && respond_to?(:default_scoped) && current_scope && current_scope.to_sql != default_scoped.to_sql) ||
-                  (respond_to?(:queryable) && queryable != unscoped.with_default_scope)
-                  raise Searchkick::DangerousOperation, "Only call reindex on models, not relations. Pass `accept_danger: true` if this is your intention."
-                end
-              end
-              searchkick_index.reindex_scope(searchkick_klass, options)
-            end
+            scoped = (respond_to?(:current_scope) && respond_to?(:default_scoped) && current_scope && current_scope.to_sql != default_scoped.to_sql) ||
+              (respond_to?(:queryable) && queryable != unscoped.with_default_scope)
+
+            searchkick_index.reindex(searchkick_klass, method_name, scoped: scoped, **options)
           end
           alias_method :reindex, :searchkick_reindex unless method_defined?(:reindex)
-
-          def searchkick_partial_reindex(method_name)
-            searchkick_reindex(method_name)
-          end
-          alias_method :partial_reindex, :searchkick_partial_reindex unless method_defined?(:partial_reindex)
-
-          def clean_indices
-            searchkick_index.clean_indices
-          end
-
-          def searchkick_import(options = {})
-            (options[:index] || searchkick_index).import_scope(searchkick_klass)
-          end
-
-          def searchkick_create_index
-            searchkick_index.create_index
-          end
 
           def searchkick_index_options
             searchkick_index.index_options
           end
-
-          def searchkick_debug
-            warn "Use debug option with search method instead"
-
-            nil # do not return anything, as this is strictly used for manual debugging
-          end
         end
-        extend Searchkick::Reindex # legacy for Searchjoy
 
-        callback_name = callbacks == :async ? :reindex_async : :reindex
+        # always add callbacks, even when callbacks is false
+        # so Model.callbacks block can be used
         if respond_to?(:after_commit)
-          after_commit callback_name, if: proc { self.class.search_callbacks? }
+          after_commit :reindex, if: -> { Searchkick.callbacks?(default: callbacks) }
         elsif respond_to?(:after_save)
-          after_save callback_name, if: proc { self.class.search_callbacks? }
-          after_destroy callback_name, if: proc { self.class.search_callbacks? }
+          after_save :reindex, if: -> { Searchkick.callbacks?(default: callbacks) }
+          after_destroy :reindex, if: -> { Searchkick.callbacks?(default: callbacks) }
         end
 
         def reindex(method_name = nil, **options)
-          if method_name
-            self.class.searchkick_index.bulk_update([self], method_name)
-          else
-            self.class.searchkick_index.reindex_record(self)
-          end
-          self.class.searchkick_index.refresh if options[:refresh]
+          RecordIndexer.new(self).reindex(method_name, **options)
         end unless method_defined?(:reindex)
-
-        def reindex_async
-          self.class.searchkick_index.reindex_record_async(self)
-        end unless method_defined?(:reindex_async)
-
-        def partial_reindex(method_name)
-          reindex(method_name, refresh: true)
-          true
-        end unless method_defined?(:partial_reindex)
 
         def similar(options = {})
           self.class.searchkick_index.similar_record(self, options)
         end unless method_defined?(:similar)
 
         def search_data
-          respond_to?(:to_hash) ? to_hash : serializable_hash
+          data = respond_to?(:to_hash) ? to_hash : serializable_hash
+          data.delete("id")
+          data.delete("_id")
+          data.delete("_type")
+          data
         end unless method_defined?(:search_data)
 
         def should_index?
           true
         end unless method_defined?(:should_index?)
+
+        if defined?(Cequel) && self < Cequel::Record && !method_defined?(:destroyed?)
+          def destroyed?
+            transient?
+          end
+        end
       end
     end
   end
